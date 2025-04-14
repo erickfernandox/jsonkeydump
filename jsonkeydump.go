@@ -13,7 +13,7 @@ import (
 	"sync"
 )
 
-const numWorkers = 10
+const numWorkers = 15
 
 func extrairChaves(body string) []string {
 	regex := regexp.MustCompile(`([a-zA-Z0-9_-]+):\s*"`)
