@@ -13,13 +13,25 @@ import (
 	"sync"
 )
 
-const numWorkers = 15
+const numWorkers = 10
 const maxParamsPerURL = 100
 
-func extrairChaves(body string) []string {
-	regex := regexp.MustCompile(`([a-zA-Z0-9_-]+):\s*"`)
-	match := regex.FindAllStringSubmatch(body, -1)
+// Extração por opção
+func extrairChaves(body string, modo int) []string {
+	var regex *regexp.Regexp
 
+	switch modo {
+	case 1:
+		regex = regexp.MustCompile(`([a-zA-Z0-9_-]+):\s*"`)
+	case 2:
+		regex = regexp.MustCompile(`name="([a-zA-Z0-9_-]+)"`)
+	case 3:
+		regex = regexp.MustCompile(`"([a-zA-Z0-9_-]+)"\s*:`)
+	default:
+		return []string{}
+	}
+
+	match := regex.FindAllStringSubmatch(body, -1)
 	unique := make(map[string]bool)
 	for _, m := range match {
 		if len(m) > 1 {
@@ -56,7 +68,7 @@ func chunkSlice(slice []string, size int) [][]string {
 	return chunks
 }
 
-func processarURL(u string, payload string) {
+func processarURL(u string, payload string, modo int) {
 	resp, err := http.Get(u)
 	if err != nil {
 		return
@@ -69,27 +81,27 @@ func processarURL(u string, payload string) {
 	}
 	body := string(bodyBytes)
 
-	chaves := extrairChaves(body)
+	chaves := extrairChaves(body, modo)
 	if len(chaves) == 0 {
 		return
 	}
 
-	// Divide as chaves em blocos de até 100
 	chunks := chunkSlice(chaves, maxParamsPerURL)
 	for _, bloco := range chunks {
 		fmt.Println(montarURL(u, bloco, payload))
 	}
 }
 
-func worker(jobs <-chan string, wg *sync.WaitGroup, payload string) {
+func worker(jobs <-chan string, wg *sync.WaitGroup, payload string, modo int) {
 	defer wg.Done()
 	for url := range jobs {
-		processarURL(url, payload)
+		processarURL(url, payload, modo)
 	}
 }
 
 func main() {
-	payload := flag.String("p", "FUZZ", "Payload para os parâmetros (ex: -p \"<script>\")")
+	payload := flag.String("p", "'\"teste", "Payload para os parâmetros (ex: -p '<script>')")
+	modo := flag.Int("o", 1, "Modo de extração: 1=json padrão, 2=name=, 3=json \"chave\":")
 	flag.Parse()
 
 	jobs := make(chan string)
@@ -97,7 +109,7 @@ func main() {
 
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
-		go worker(jobs, &wg, *payload)
+		go worker(jobs, &wg, *payload, *modo)
 	}
 
 	scanner := bufio.NewScanner(os.Stdin)
