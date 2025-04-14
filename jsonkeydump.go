@@ -14,6 +14,7 @@ import (
 )
 
 const numWorkers = 15
+const maxParamsPerURL = 100
 
 func extrairChaves(body string) []string {
 	regex := regexp.MustCompile(`([a-zA-Z0-9_-]+):\s*"`)
@@ -46,6 +47,15 @@ func montarURL(base string, chaves []string, payload string) string {
 	return parsedURL.String()
 }
 
+func chunkSlice(slice []string, size int) [][]string {
+	var chunks [][]string
+	for size < len(slice) {
+		slice, chunks = slice[size:], append(chunks, slice[0:size:size])
+	}
+	chunks = append(chunks, slice)
+	return chunks
+}
+
 func processarURL(u string, payload string) {
 	resp, err := http.Get(u)
 	if err != nil {
@@ -64,7 +74,11 @@ func processarURL(u string, payload string) {
 		return
 	}
 
-	fmt.Println(montarURL(u, chaves, payload))
+	// Divide as chaves em blocos de até 100
+	chunks := chunkSlice(chaves, maxParamsPerURL)
+	for _, bloco := range chunks {
+		fmt.Println(montarURL(u, bloco, payload))
+	}
 }
 
 func worker(jobs <-chan string, wg *sync.WaitGroup, payload string) {
@@ -81,13 +95,11 @@ func main() {
 	jobs := make(chan string)
 	var wg sync.WaitGroup
 
-	// Inicia workers
 	for i := 0; i < numWorkers; i++ {
 		wg.Add(1)
 		go worker(jobs, &wg, *payload)
 	}
 
-	// Lê da stdin
 	scanner := bufio.NewScanner(os.Stdin)
 	for scanner.Scan() {
 		url := strings.TrimSpace(scanner.Text())
