@@ -109,7 +109,7 @@ func worker(jobs <-chan string, wg *sync.WaitGroup, payload string, modo int) {
 // Função principal
 func main() {
 	payload := flag.String("p", "FUZZ", "Payload para os parâmetros (ex: -p '<script>')")
-	modo := flag.Int("o", 1, "Modo de extração: 1=chave:", 2=name=, 3=\"chave\":, 4='chave':")
+	modo := flag.Int("o", 1, "Modo de extração: 1=chave:, 2=name=, 3=\"chave\":, 4='chave':")
 	flag.Parse()
 
 	jobs := make(chan string)
