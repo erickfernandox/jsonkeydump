@@ -13,10 +13,10 @@ import (
 	"sync"
 )
 
-const numWorkers = 10
+const numWorkers = 15
 const maxParamsPerURL = 100
 
-// Extração por opção
+// Extrai chaves com base na opção selecionada
 func extrairChaves(body string, modo int) []string {
 	var regex *regexp.Regexp
 
@@ -27,6 +27,8 @@ func extrairChaves(body string, modo int) []string {
 		regex = regexp.MustCompile(`name="([a-zA-Z0-9_-]+)"`)
 	case 3:
 		regex = regexp.MustCompile(`"([a-zA-Z0-9_-]+)"\s*:`)
+	case 4:
+		regex = regexp.MustCompile(`'([a-zA-Z0-9_-]+)'\s*:`)
 	default:
 		return []string{}
 	}
@@ -46,6 +48,7 @@ func extrairChaves(body string, modo int) []string {
 	return keys
 }
 
+// Monta uma URL com os parâmetros extraídos
 func montarURL(base string, chaves []string, payload string) string {
 	parsedURL, err := url.Parse(base)
 	if err != nil {
@@ -59,6 +62,7 @@ func montarURL(base string, chaves []string, payload string) string {
 	return parsedURL.String()
 }
 
+// Divide slice em blocos de tamanho fixo
 func chunkSlice(slice []string, size int) [][]string {
 	var chunks [][]string
 	for size < len(slice) {
@@ -68,6 +72,7 @@ func chunkSlice(slice []string, size int) [][]string {
 	return chunks
 }
 
+// Faz o request, extrai as chaves e gera URLs
 func processarURL(u string, payload string, modo int) {
 	resp, err := http.Get(u)
 	if err != nil {
@@ -92,6 +97,7 @@ func processarURL(u string, payload string, modo int) {
 	}
 }
 
+// Worker que consome URLs do canal
 func worker(jobs <-chan string, wg *sync.WaitGroup, payload string, modo int) {
 	defer wg.Done()
 	for url := range jobs {
@@ -99,9 +105,10 @@ func worker(jobs <-chan string, wg *sync.WaitGroup, payload string, modo int) {
 	}
 }
 
+// Função principal
 func main() {
-	payload := flag.String("p", "'\"teste", "Payload para os parâmetros (ex: -p '<script>')")
-	modo := flag.Int("o", 1, "Modo de extração: 1=json padrão, 2=name=, 3=json \"chave\":")
+	payload := flag.String("p", "FUZZ", "Payload para os parâmetros (ex: -p '<script>')")
+	modo := flag.Int("o", 1, "Modo de extração: 1=chave:\", 2=name=, 3=\"chave\":, 4='chave':")
 	flag.Parse()
 
 	jobs := make(chan string)
