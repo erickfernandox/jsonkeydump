@@ -22,7 +22,8 @@ func extrairChaves(body string, modo int) []string {
 
 	switch modo {
 	case 1:
-		regex = regexp.MustCompile(`([a-zA-Z0-9_-]+):\s*"`)
+		// Aceita aspas simples ou duplas na chave, espaços infinitos antes/depois do ':' e aspas após
+		regex = regexp.MustCompile(`['"]?([a-zA-Z0-9_-]+)['"]?\s*:\s*['"]`)
 	case 2:
 		regex = regexp.MustCompile(`name="([a-zA-Z0-9_-]+)"`)
 	case 3:
@@ -108,7 +109,7 @@ func worker(jobs <-chan string, wg *sync.WaitGroup, payload string, modo int) {
 // Função principal
 func main() {
 	payload := flag.String("p", "FUZZ", "Payload para os parâmetros (ex: -p '<script>')")
-	modo := flag.Int("o", 1, "Modo de extração: 1=chave:\", 2=name=, 3=\"chave\":, 4='chave':")
+	modo := flag.Int("o", 1, "Modo de extração: 1=chave:", 2=name=, 3=\"chave\":, 4='chave':")
 	flag.Parse()
 
 	jobs := make(chan string)
