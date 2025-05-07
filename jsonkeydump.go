@@ -25,15 +25,11 @@ func extrairChaves(body string, modo int) []string {
 		// Aceita aspas simples ou duplas na chave, espaços infinitos antes/depois do ':' e aspas após
 		regex = regexp.MustCompile(`['"]?([a-zA-Z0-9_-]+)['"]?\s*:\s*['"]`)
 	case 2:
-		regex = regexp.MustCompile(`name="([a-zA-Z0-9_-]+)"`)
+		regex = regexp.MustCompile(`name="([a-zA-Z0-9_-]+)"`) //Input Name
 	case 3:
-		regex = regexp.MustCompile(`"([a-zA-Z0-9_-]+)"\s*:`)
+		regex = regexp.MustCompile(`id="([a-zA-Z0-9_-]+)"`) // Tudo que tem ID=
 	case 4:
-		regex = regexp.MustCompile(`'([a-zA-Z0-9_-]+)'\s*:`)
-	case 5:
-		regex = regexp.MustCompile(`id="([a-zA-Z0-9_-]+)"`)	
-	case 6:
-		regex := regexp.MustCompile(`[?&]([a-zA-Z0-9_-]+)=`) //Parametros	
+		regex := regexp.MustCompile(`[?&]([a-zA-Z0-9_-]+)=`) //Parametros ?X= or &X=
 	default:
 		return []string{}
 	}
