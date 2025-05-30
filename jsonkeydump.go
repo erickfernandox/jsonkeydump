@@ -14,7 +14,7 @@ import (
 )
 
 const numWorkers = 15
-const maxParamsPerURL = 100
+const maxParamsPerURL = 50
 
 // Extrai chaves com base na opção selecionada
 func extrairChaves(body string, modo int) []string {
