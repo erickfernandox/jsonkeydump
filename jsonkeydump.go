@@ -23,7 +23,7 @@ func extrairChaves(body string, modo int) []string {
 	switch modo {
 	case 1:
 		// Aceita aspas simples ou duplas na chave, espaços infinitos antes/depois do ':' e aspas após
-		regex = regexp.MustCompile(`['"]?([a-zA-Z0-9_-]+)['"]?\s*:\s*['"]`)
+		regex = regexp.MustCompile(`['"]?([a-zA-Z0-9_-]+)['"]?\s*:`)
 	case 2:
 		regex = regexp.MustCompile(`name="([a-zA-Z0-9_-]+)"`) //Input Name
 	case 3:
