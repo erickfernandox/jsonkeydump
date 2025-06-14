@@ -123,5 +123,5 @@ cd jsonkeydump
 <hr>
 
 <h2>👨‍💻 Author</h2>
-<p>Developed by security professionals to automate testing in web applications.<br>
+<p>Developed by erickfernandox.<br>
 Contributions are welcome!</p>
