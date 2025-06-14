@@ -21,6 +21,8 @@
 <h4>1. Clone the repository</h4>
 <pre><code>git clone https://github.com/erickfernandox/jsonkeydump.git
 cd jsonkeydump
+or
+go install github.com/erickfernandox/jsonkeydump@latest
 </code></pre>
 
 <h4>2. Build</h4>
