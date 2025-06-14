@@ -30,6 +30,8 @@ func extrairChaves(body string, modo int) []string {
 		regex = regexp.MustCompile(`id="([a-zA-Z0-9_-]+)"`) // Tudo que tem ID=
 	case 4:
 		regex = regexp.MustCompile(`[?&]([a-zA-Z0-9_-]+)=`) //Parametros ?X= or &X=
+	case 5:
+	regex = regexp.MustCompile(`\b([a-zA-Z0-9_-]+)\b\s*=`) // var X =
 	default:
 		return []string{}
 	}
