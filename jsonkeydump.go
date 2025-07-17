@@ -13,25 +13,21 @@ import (
 	"sync"
 )
 
-const numWorkers = 15
-const maxParamsPerURL = 40
+const maxParamsPerURL = 70
 
-// Extrai chaves com base na opção selecionada
 func extrairChaves(body string, modo int) []string {
 	var regex *regexp.Regexp
-
 	switch modo {
 	case 1:
-		// Aceita aspas simples ou duplas na chave, espaços infinitos antes/depois do ':' e aspas após
 		regex = regexp.MustCompile(`['"]?([a-zA-Z0-9_-]+)['"]?\s*:`)
 	case 2:
-		regex = regexp.MustCompile(`name="([a-zA-Z0-9_-]+)"`) //Input Name
+		regex = regexp.MustCompile(`name="([a-zA-Z0-9_-]+)"`)
 	case 3:
-		regex = regexp.MustCompile(`id="([a-zA-Z0-9_-]+)"`) // Tudo que tem ID=
+		regex = regexp.MustCompile(`id="([a-zA-Z0-9_-]+)"`)
 	case 4:
-		regex = regexp.MustCompile(`[?&]([a-zA-Z0-9_-]+)=`) //Parametros ?X= or &X=
+		regex = regexp.MustCompile(`[?&]([a-zA-Z0-9_-]+)=`)
 	case 5:
-		regex = regexp.MustCompile(`([a-zA-Z0-9_-]+) =`) // var X =
+		regex = regexp.MustCompile(`([a-zA-Z0-9_-]+) =`)
 	default:
 		return []string{}
 	}
@@ -51,7 +47,6 @@ func extrairChaves(body string, modo int) []string {
 	return keys
 }
 
-// Monta uma URL com os parâmetros extraídos
 func montarURL(base string, chaves []string, payload string) string {
 	parsedURL, err := url.Parse(base)
 	if err != nil {
@@ -65,7 +60,6 @@ func montarURL(base string, chaves []string, payload string) string {
 	return parsedURL.String()
 }
 
-// Divide slice em blocos de tamanho fixo
 func chunkSlice(slice []string, size int) [][]string {
 	var chunks [][]string
 	for size < len(slice) {
@@ -75,7 +69,6 @@ func chunkSlice(slice []string, size int) [][]string {
 	return chunks
 }
 
-// Faz o request, extrai as chaves e gera URLs
 func processarURL(u string, payload string, modo int) {
 	resp, err := http.Get(u)
 	if err != nil {
@@ -96,28 +89,30 @@ func processarURL(u string, payload string, modo int) {
 
 	chunks := chunkSlice(chaves, maxParamsPerURL)
 	for _, bloco := range chunks {
-		fmt.Println(montarURL(u, bloco, payload))
+		result := montarURL(u, bloco, payload)
+		if result != "" {
+			fmt.Println(result)
+		}
 	}
 }
 
-// Worker que consome URLs do canal
 func worker(jobs <-chan string, wg *sync.WaitGroup, payload string, modo int) {
 	defer wg.Done()
-	for url := range jobs {
-		processarURL(url, payload, modo)
+	for u := range jobs {
+		processarURL(u, payload, modo)
 	}
 }
 
-// Função principal
 func main() {
 	payload := flag.String("p", "FUZZ", "Payload para os parâmetros (ex: -p '<script>')")
-	modo := flag.Int("o", 1, "Modo de extração: 1=chave em JSON:, 2=Input name, 3=div ids:, 4=parametros no HTML")
+	modo := flag.Int("o", 1, "Modo de extração: 1=JSON keys, 2=Input name, 3=ID, 4=Query params, 5=var x =")
+	threads := flag.Int("t", 15, "Número de threads para execução simultânea")
 	flag.Parse()
 
 	jobs := make(chan string)
 	var wg sync.WaitGroup
 
-	for i := 0; i < numWorkers; i++ {
+	for i := 0; i < *threads; i++ {
 		wg.Add(1)
 		go worker(jobs, &wg, *payload, *modo)
 	}
@@ -129,6 +124,7 @@ func main() {
 			jobs <- url
 		}
 	}
+
 	close(jobs)
 	wg.Wait()
 }
