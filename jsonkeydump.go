@@ -2,6 +2,7 @@ package main
 
 import (
 	"bufio"
+	"crypto/tls"
 	"flag"
 	"fmt"
 	"io"
@@ -21,6 +22,9 @@ const (
 
 var httpClient = &http.Client{
 	Timeout: 15 * time.Second,
+	Transport: &http.Transport{
+		TLSClientConfig: &tls.Config{InsecureSkipVerify: true},
+	},
 }
 
 // ── HTTP ──────────────────────────────────────────────────────────────────────
@@ -187,7 +191,6 @@ func encontrarSinkParaVar(body, varName string) string {
 func clusterScan(baseURL string, modo int) {
 	body, err := fetchBody(baseURL)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "[-] %s → %v\n", baseURL, err)
 		return
 	}
 
