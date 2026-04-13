@@ -11,45 +11,49 @@ import (
 	"regexp"
 	"strings"
 	"sync"
+	"time"
 )
 
-const maxParamsPerURL = 70
+const (
+	clusterSize = 30
+	scanMarker  = "PSCAN7x9zMARKER"
+)
 
-// Sinks JS que causam redirecionamento (DOM Redirect / Open Redirect)
-var redirectSinks = []*regexp.Regexp{
-	regexp.MustCompile(`location\.replace\s*\(\s*['"\x60]?([^'"\x60\)]+)`),
-	regexp.MustCompile(`location\.assign\s*\(\s*['"\x60]?([^'"\x60\)]+)`),
-	regexp.MustCompile(`location\.href\s*=\s*['"\x60]?([^'"\x60;\n]+)`),
-	regexp.MustCompile(`location\s*=\s*['"\x60]?([^'"\x60;\n]+)`),
-	regexp.MustCompile(`window\.location\s*=\s*['"\x60]?([^'"\x60;\n]+)`),
-	regexp.MustCompile(`document\.location\s*=\s*['"\x60]?([^'"\x60;\n]+)`),
-	regexp.MustCompile(`window\.location\.href\s*=\s*['"\x60]?([^'"\x60;\n]+)`),
-	regexp.MustCompile(`window\.location\.replace\s*\(\s*['"\x60]?([^'"\x60\)]+)`),
-	regexp.MustCompile(`window\.navigate\s*\(\s*['"\x60]?([^'"\x60\)]+)`),
-	regexp.MustCompile(`window\.open\s*\(\s*['"\x60]?([^'"\x60\)]+)`),
-	regexp.MustCompile(`navigate\s*\(\s*['"\x60]?([^'"\x60\)]+)`),
-	regexp.MustCompile(`router\.push\s*\(\s*['"\x60]?([^'"\x60\)]+)`),
-	regexp.MustCompile(`router\.replace\s*\(\s*['"\x60]?([^'"\x60\)]+)`),
-	regexp.MustCompile(`history\.pushState\s*\([^,]+,[^,]+,\s*['"\x60]?([^'"\x60\)]+)`),
-	regexp.MustCompile(`history\.replaceState\s*\([^,]+,[^,]+,\s*['"\x60]?([^'"\x60\)]+)`),
+var httpClient = &http.Client{
+	Timeout: 15 * time.Second,
 }
 
-// Nomes de variáveis JS comuns que indicam redirecionamento
-var redirectVarNames = regexp.MustCompile(
-	`(?i)(redirect|redirectUrl|redirectUri|next|returnUrl|return_url|goto|dest|destination|target|url|link|ref|referer|callback|forward|continue|redir|path|location)\s*=\s*['"\x60]?([^'"\x60;\n&]+)`,
-)
+// ── HTTP ──────────────────────────────────────────────────────────────────────
+
+func fetchBody(rawURL string) (string, error) {
+	req, err := http.NewRequest("GET", rawURL, nil)
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("User-Agent", "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36")
+	req.Header.Set("Accept", "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8")
+
+	resp, err := httpClient.Do(req)
+	if err != nil {
+		return "", err
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	return string(b), err
+}
+
+// ── Extração de parâmetros ────────────────────────────────────────────────────
 
 func extrairChaves(body string, modo int) []string {
 	var regexes []*regexp.Regexp
-
 	switch modo {
-	case 0: // Todos os modos
+	case 0:
 		regexes = []*regexp.Regexp{
 			regexp.MustCompile(`['"]?([a-zA-Z0-9_-]+)['"]?\s*:`),
 			regexp.MustCompile(`name="([a-zA-Z0-9_-]+)"`),
 			regexp.MustCompile(`id="([a-zA-Z0-9_-]+)"`),
 			regexp.MustCompile(`[?&]([a-zA-Z0-9_-]+)=`),
-			regexp.MustCompile(`([a-zA-Z0-9_-]+)\s*=\s*`),
+			regexp.MustCompile(`\b([a-zA-Z0-9_-]+)\s*=\s*`),
 		}
 	case 1:
 		regexes = []*regexp.Regexp{regexp.MustCompile(`['"]?([a-zA-Z0-9_-]+)['"]?\s*:`)}
@@ -60,9 +64,9 @@ func extrairChaves(body string, modo int) []string {
 	case 4:
 		regexes = []*regexp.Regexp{regexp.MustCompile(`[?&]([a-zA-Z0-9_-]+)=`)}
 	case 5:
-		regexes = []*regexp.Regexp{regexp.MustCompile(`([a-zA-Z0-9_-]+)\s*=\s*`)}
+		regexes = []*regexp.Regexp{regexp.MustCompile(`\b([a-zA-Z0-9_-]+)\s*=\s*`)}
 	default:
-		return []string{}
+		return nil
 	}
 
 	unique := make(map[string]bool)
@@ -73,7 +77,6 @@ func extrairChaves(body string, modo int) []string {
 			}
 		}
 	}
-
 	var keys []string
 	for k := range unique {
 		keys = append(keys, k)
@@ -81,28 +84,19 @@ func extrairChaves(body string, modo int) []string {
 	return keys
 }
 
-func montarURL(base string, chaves []string, payload string) string {
-	parsedURL, err := url.Parse(base)
-	if err != nil {
-		return ""
-	}
-	q := parsedURL.Query()
-	for _, chave := range chaves {
-		q.Set(chave, payload)
-	}
-	parsedURL.RawQuery = q.Encode()
-	return parsedURL.String()
-}
+// ── URL helpers ───────────────────────────────────────────────────────────────
 
-func montarURLParam(base, chave, valor string) string {
-	parsedURL, err := url.Parse(base)
+func montarURL(base string, params []string, valor string) string {
+	p, err := url.Parse(base)
 	if err != nil {
 		return ""
 	}
-	q := parsedURL.Query()
-	q.Set(chave, valor)
-	parsedURL.RawQuery = q.Encode()
-	return parsedURL.String()
+	q := p.Query()
+	for _, k := range params {
+		q.Set(k, valor)
+	}
+	p.RawQuery = q.Encode()
+	return p.String()
 }
 
 func chunkSlice(slice []string, size int) [][]string {
@@ -113,149 +107,189 @@ func chunkSlice(slice []string, size int) [][]string {
 	return append(chunks, slice)
 }
 
-func fetchBody(u string) (string, error) {
-	resp, err := http.Get(u)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return "", err
-	}
-	return string(bodyBytes), nil
-}
+// ── FASE 1: encontrar variável que recebeu o marker ───────────────────────────
+//
+// Cobre todos esses padrões:
+//   var x = 'MARKER'          let x = 'MARKER'        const x = 'MARKER'
+//   x = 'MARKER'               x = "MARKER"            x = `MARKER`
+//   "x": "MARKER"              x: 'MARKER'             'x': "MARKER"
 
-// scanRedirect analisa se um parâmetro reflete dentro de um sink de redirecionamento
-func scanRedirect(baseURL, param string) {
-	marker := "PSCAN_REDIR_" + strings.ToUpper(param) + "_7x9z"
-	testURL := montarURLParam(baseURL, param, marker)
-
-	body, err := fetchBody(testURL)
-	if err != nil {
-		return
+func encontrarVarsComMarker(body, marker string) []string {
+	escaped := regexp.QuoteMeta(marker)
+	patterns := []*regexp.Regexp{
+		// var/let/const x = 'MARKER'
+		regexp.MustCompile(`(?:var|let|const)\s+([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*['"\x60]` + escaped),
+		// x = 'MARKER'  (bare assignment)
+		regexp.MustCompile(`\b([a-zA-Z_$][a-zA-Z0-9_$]*)\s*=\s*['"\x60]` + escaped),
+		// "x": "MARKER"  (JSON quoted key)
+		regexp.MustCompile(`['"]([a-zA-Z_$][a-zA-Z0-9_$]*)['"][ \t]*:[ \t]*['"\x60]` + escaped),
+		// x: 'MARKER'  (object literal unquoted key)
+		regexp.MustCompile(`\b([a-zA-Z_$][a-zA-Z0-9_$]*)[ \t]*:[ \t]*['"\x60]` + escaped),
 	}
 
-	// Verifica se o marker aparece em algum sink de redirect
-	for _, sink := range redirectSinks {
-		matches := sink.FindAllStringSubmatch(body, -1)
-		for _, m := range matches {
-			for _, val := range m[1:] {
-				if strings.Contains(val, marker) {
-					sinkName := extractSinkName(sink.String())
-					fmt.Printf("[REDIRECT SINK] %s | param=%s | sink=%s | url=%s\n",
-						"\033[31mVULN\033[0m", param, sinkName, testURL)
-					return
-				}
+	unique := make(map[string]bool)
+	for _, rx := range patterns {
+		for _, m := range rx.FindAllStringSubmatch(body, -1) {
+			if len(m) > 1 && m[1] != "" {
+				unique[m[1]] = true
 			}
 		}
 	}
+	var vars []string
+	for v := range unique {
+		vars = append(vars, v)
+	}
+	return vars
+}
 
-	// Verifica se o marker aparece em variáveis JS com nomes suspeitos
-	varMatches := redirectVarNames.FindAllStringSubmatch(body, -1)
-	for _, m := range varMatches {
-		if len(m) > 2 && strings.Contains(m[2], marker) {
-			fmt.Printf("[REDIRECT VAR]  %s | param=%s | var=%s | url=%s\n",
-				"\033[33mSUSP\033[0m", param, m[1], testURL)
-			return
-		}
+// ── FASE 2: verificar se a variável está dentro de um sink de redirect ────────
+
+func encontrarSinkParaVar(body, varName string) string {
+	v := regexp.QuoteMeta(varName)
+	// padrão: sink( varName  ou  sink = varName
+	// [\s,);] garante que é o nome da var e não substring de outra
+	end := `[\s,);\n+]`
+	sinks := []struct {
+		nome    string
+		pattern string
+	}{
+		{"location.replace()", `location\.replace\s*\(\s*` + v + end},
+		{"location.assign()", `location\.assign\s*\(\s*` + v + end},
+		{"location.href =", `location\.href\s*=\s*` + v + end},
+		{"location =", `(?:^|[^.\w])location\s*=\s*` + v + end},
+		{"window.location =", `window\.location\s*=\s*` + v + end},
+		{"window.location.href =", `window\.location\.href\s*=\s*` + v + end},
+		{"window.location.replace()", `window\.location\.replace\s*\(\s*` + v + end},
+		{"document.location =", `document\.location\s*=\s*` + v + end},
+		{"window.navigate()", `window\.navigate\s*\(\s*` + v + end},
+		{"window.open()", `window\.open\s*\(\s*` + v + end},
+		{"navigate()", `(?:^|[^.\w])navigate\s*\(\s*` + v + end},
+		{"router.push()", `router\.push\s*\(\s*` + v + end},
+		{"router.replace()", `router\.replace\s*\(\s*` + v + end},
+		{"history.pushState()", `history\.pushState\s*\([^,]*,[^,]*,\s*` + v + end},
+		{"history.replaceState()", `history\.replaceState\s*\([^,]*,[^,]*,\s*` + v + end},
 	}
 
-	// Verifica reflexão simples em qualquer lugar (para pesquisa manual)
-	if strings.Contains(body, marker) {
-		fmt.Printf("[REFLECTED]     %s | param=%s | url=%s\n",
-			"\033[34mINFO\033[0m", param, testURL)
+	for _, s := range sinks {
+		rx, err := regexp.Compile(s.pattern)
+		if err != nil {
+			continue
+		}
+		if rx.MatchString(body) {
+			return s.nome
+		}
+	}
+	return ""
+}
+
+// ── Scan cluster bomb ─────────────────────────────────────────────────────────
+
+func clusterScan(baseURL string, modo int) {
+	body, err := fetchBody(baseURL)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "[-] %s → %v\n", baseURL, err)
+		return
+	}
+
+	params := extrairChaves(body, modo)
+	if len(params) == 0 {
+		return
+	}
+
+	for _, cluster := range chunkSlice(params, clusterSize) {
+		testURL := montarURL(baseURL, cluster, scanMarker)
+		if testURL == "" {
+			continue
+		}
+
+		respBody, err := fetchBody(testURL)
+		if err != nil {
+			continue
+		}
+
+		// marker não refletiu nesse cluster — pula
+		if !strings.Contains(respBody, scanMarker) {
+			continue
+		}
+
+		// FASE 1: qual variável recebeu o marker?
+		vars := encontrarVarsComMarker(respBody, scanMarker)
+
+		if len(vars) == 0 {
+			// Reflete em texto livre mas não numa atribuição identificável
+			fmt.Printf("[RAW-REFLECT] \033[34mINFO\033[0m | marker refletido (variável não identificada)\n  cluster : %v\n  url     : %s\n\n",
+				cluster, testURL)
+			continue
+		}
+
+		for _, varName := range vars {
+			// FASE 2: essa variável é usada em algum sink?
+			sink := encontrarSinkParaVar(respBody, varName)
+			if sink != "" {
+				fmt.Printf("[REDIRECT SINK] \033[31mVULN\033[0m | var \"%s\" → %s\n  cluster : %v\n  url     : %s\n\n",
+					varName, sink, cluster, testURL)
+			} else {
+				fmt.Printf("[VAR-REFLECT]   \033[33mSUSP\033[0m | var \"%s\" recebeu marker (sink não visível na mesma página)\n  cluster : %v\n  url     : %s\n\n",
+					varName, cluster, testURL)
+			}
+		}
 	}
 }
 
-func extractSinkName(pattern string) string {
-	knownSinks := []string{
-		"location.replace", "location.assign", "location.href", "window.location",
-		"document.location", "window.navigate", "window.open", "navigate",
-		"router.push", "router.replace", "history.pushState", "history.replaceState",
-	}
-	for _, s := range knownSinks {
-		if strings.Contains(pattern, strings.ReplaceAll(s, ".", `\.`)) ||
-			strings.Contains(pattern, s) {
-			return s
-		}
-	}
-	return "unknown"
-}
+// ── Modo normal (gerar URLs com payload) ─────────────────────────────────────
 
-func processarURL(u, payload string, modo int, scan bool) {
-	body, err := fetchBody(u)
+func processarURLNormal(baseURL, payload string, modo int) {
+	body, err := fetchBody(baseURL)
 	if err != nil {
 		return
 	}
-
-	chaves := extrairChaves(body, modo)
-	if len(chaves) == 0 {
-		return
-	}
-
-	if scan {
-		// Modo scan: testa cada parâmetro individualmente
-		var wg sync.WaitGroup
-		sem := make(chan struct{}, 10)
-		for _, chave := range chaves {
-			wg.Add(1)
-			sem <- struct{}{}
-			go func(c string) {
-				defer wg.Done()
-				defer func() { <-sem }()
-				scanRedirect(u, c)
-			}(chave)
-		}
-		wg.Wait()
-		return
-	}
-
-	// Modo normal: monta URLs com blocos de parâmetros
-	chunks := chunkSlice(chaves, maxParamsPerURL)
-	for _, bloco := range chunks {
-		result := montarURL(u, bloco, payload)
-		if result != "" {
-			fmt.Println(result)
+	params := extrairChaves(body, modo)
+	for _, bloco := range chunkSlice(params, clusterSize) {
+		if u := montarURL(baseURL, bloco, payload); u != "" {
+			fmt.Println(u)
 		}
 	}
 }
+
+// ── Workers ───────────────────────────────────────────────────────────────────
 
 func worker(jobs <-chan string, wg *sync.WaitGroup, payload string, modo int, scan bool) {
 	defer wg.Done()
 	for u := range jobs {
-		processarURL(u, payload, modo, scan)
+		if scan {
+			clusterScan(u, modo)
+		} else {
+			processarURLNormal(u, payload, modo)
+		}
 	}
 }
 
 func main() {
-	payload := flag.String("p", "FUZZ", "Payload para os parâmetros")
-	modo := flag.Int("o", 0, "Modo: 0=todos, 1=JSON keys, 2=Input name, 3=ID, 4=Query params, 5=JS vars")
-	threads := flag.Int("t", 15, "Threads simultâneas")
-	scan := flag.Bool("scan", false, "Scan de Open Redirect / DOM Redirect por parâmetro")
+	payload := flag.String("p", "FUZZ", "Payload para modo normal")
+	modo := flag.Int("o", 0, "0=todos, 1=JSON keys, 2=name=, 3=id=, 4=query params, 5=JS vars")
+	threads := flag.Int("t", 15, "Threads")
+	scan := flag.Bool("scan", false, "Scan: cluster bomb → var refletida → sink de redirect")
 	flag.Parse()
 
 	if *scan {
-		fmt.Fprintf(os.Stderr, "[*] Modo SCAN ativo — detectando Open Redirect / DOM Redirect\n")
-		fmt.Fprintf(os.Stderr, "[*] Legendas: \033[31mVULN\033[0m=sink confirmado  \033[33mSUSP\033[0m=variável suspeita  \033[34mINFO\033[0m=reflexão simples\n\n")
+		fmt.Fprintf(os.Stderr, "[*] SCAN | cluster=%d | marker=%s\n", clusterSize, scanMarker)
+		fmt.Fprintf(os.Stderr, "[*] \033[31mVULN\033[0m=var→sink  \033[33mSUSP\033[0m=var reflete/sink indireto  \033[34mINFO\033[0m=reflexão bruta\n\n")
 	}
 
 	jobs := make(chan string)
 	var wg sync.WaitGroup
-
 	for i := 0; i < *threads; i++ {
 		wg.Add(1)
 		go worker(jobs, &wg, *payload, *modo, *scan)
 	}
 
-	scanner := bufio.NewScanner(os.Stdin)
-	for scanner.Scan() {
-		u := strings.TrimSpace(scanner.Text())
+	sc := bufio.NewScanner(os.Stdin)
+	for sc.Scan() {
+		u := strings.TrimSpace(sc.Text())
 		if u != "" {
 			jobs <- u
 		}
 	}
-
 	close(jobs)
 	wg.Wait()
 }
