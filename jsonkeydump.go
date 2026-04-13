@@ -15,8 +15,8 @@ import (
 )
 
 const (
-	clusterSize = 30
-	scanMarker  = "PSCAN7x9zMARKER"
+	clusterSize = 50
+	scanMarker  = "https://PSCAN7x9zMARKER"
 )
 
 var httpClient = &http.Client{
@@ -216,9 +216,7 @@ func clusterScan(baseURL string, modo int) {
 		vars := encontrarVarsComMarker(respBody, scanMarker)
 
 		if len(vars) == 0 {
-			// Reflete em texto livre mas não numa atribuição identificável
-			fmt.Printf("[RAW-REFLECT] \033[34mINFO\033[0m | marker refletido (variável não identificada)\n  cluster : %v\n  url     : %s\n\n",
-				cluster, testURL)
+			fmt.Printf("[Not Vulnerable] - %s\n", testURL)
 			continue
 		}
 
@@ -226,11 +224,10 @@ func clusterScan(baseURL string, modo int) {
 			// FASE 2: essa variável é usada em algum sink?
 			sink := encontrarSinkParaVar(respBody, varName)
 			if sink != "" {
-				fmt.Printf("[REDIRECT SINK] \033[31mVULN\033[0m | var \"%s\" → %s\n  cluster : %v\n  url     : %s\n\n",
-					varName, sink, cluster, testURL)
+				fmt.Printf("\033[31m[Vulnerable] - %s - [var \"%s\" → %s]\033[0m\n",
+					testURL, varName, sink)
 			} else {
-				fmt.Printf("[VAR-REFLECT]   \033[33mSUSP\033[0m | var \"%s\" recebeu marker (sink não visível na mesma página)\n  cluster : %v\n  url     : %s\n\n",
-					varName, cluster, testURL)
+				fmt.Printf("[Not Vulnerable] - %s\n", testURL)
 			}
 		}
 	}
